@@ -15,6 +15,7 @@
 import itertools
 import logging
 import math
+import os
 import random
 import sys
 from datetime import datetime
@@ -58,6 +59,8 @@ class BaseTrainer(object):
     def __init__(self, cfg: Config):
         super(BaseTrainer, self).__init__()
         self.cfg = cfg
+        if os.environ.get('HYDROFUSE_DISABLE_AMP') == '1':
+            torch.set_float32_matmul_precision('high')  # TF32: fast fp32 matmul (run compile-free via TORCHDYNAMO_DISABLE)
         self.model = None
         self.optimizer = None
         self.loss_obj = None
@@ -179,6 +182,23 @@ class BaseTrainer(object):
                 f'Could not resolve the following module parts for finetuning: {unresolved_modules}'
             )
 
+    def _load_reconciled_state_dict(self, state_dict: dict):
+        """Load a checkpoint into self.model, reconciling the torch.compile `_orig_mod.` prefix.
+
+        A torch.compile'd model (OptimizedModule) expects `_orig_mod.`-prefixed keys, but checkpoints
+        saved from the underlying module are un-prefixed (and vice versa). Add or strip the prefix to
+        match the live model so finetuning/continue-training can warm-start regardless of compile state.
+        """
+        model_keys = set(self.model.state_dict().keys())
+        sd_keys = set(state_dict.keys())
+        model_pref = any(k.startswith('_orig_mod.') for k in model_keys)
+        sd_pref = any(k.startswith('_orig_mod.') for k in sd_keys)
+        if model_pref and not sd_pref:
+            state_dict = {f'_orig_mod.{k}': v for k, v in state_dict.items()}
+        elif sd_pref and not model_pref:
+            state_dict = {k.replace('_orig_mod.', '', 1): v for k, v in state_dict.items()}
+        self.model.load_state_dict(state_dict)
+
     def initialize_training(self):
         """Initialize the training class.
 
@@ -199,7 +219,7 @@ class BaseTrainer(object):
             LOGGER.info(
                 f'Starting training from Checkpoint {self.cfg.checkpoint_path}'
             )
-            self.model.load_state_dict(
+            self._load_reconciled_state_dict(
                 torch.load(
                     str(self.cfg.checkpoint_path),
                     map_location=self.device,
@@ -215,7 +235,7 @@ class BaseTrainer(object):
                 )
             ][-1]
             LOGGER.info(f'Starting training from checkpoint {checkpoint_path}')
-            self.model.load_state_dict(
+            self._load_reconciled_state_dict(
                 torch.load(
                     str(checkpoint_path),
                     map_location=self.device,
@@ -228,7 +248,7 @@ class BaseTrainer(object):
             self._freeze_model_parts()
 
         self.optimizer = self._get_optimizer()
-        self.scaler = GradScaler(enabled=self.device.type == 'cuda')
+        self.scaler = GradScaler(enabled=self.device.type == 'cuda' and os.environ.get('HYDROFUSE_DISABLE_AMP') != '1')
         self.loss_obj = self._get_loss_obj().to(self.device)
 
         # Add possible regularization terms to the loss function.
@@ -444,7 +464,8 @@ class BaseTrainer(object):
                     data[key] = data[key].to(self.device)
 
             with autocast(
-                self.device.type, enabled=(self.device.type == 'cuda')
+                self.device.type,
+                enabled=(self.device.type == 'cuda' and os.environ.get('HYDROFUSE_DISABLE_AMP') != '1'),
             ):
                 # apply possible pre-processing to the batch before the forward pass
                 data = self.model.pre_model_hook(data, is_train=True)

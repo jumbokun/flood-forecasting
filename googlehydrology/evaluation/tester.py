@@ -102,6 +102,7 @@ class BaseTester(object):
 
         # pre-initialize variables, defined in class methods
         self.basins = None
+        self._rng = random.Random(getattr(self.cfg, 'seed', None) or 0)
 
         # initialize loss object to compute the loss of the evaluation data
         self.loss_obj = get_loss_obj(cfg)
@@ -215,7 +216,11 @@ class BaseTester(object):
             self.period == 'validation'
             and len(basins) > self.cfg.validate_n_random_basins
         ):
-            basins = random.sample(basins, k=self.cfg.validate_n_random_basins)
+            # A1 fix: epoch-INDEPENDENT subset (fresh seeded RNG each call) so the validation
+            # median NSE/KGE/FHV are comparable across epochs (was self._rng, which advanced).
+            basins = random.Random(getattr(self.cfg, 'seed', 0) or 0).sample(
+                basins, k=self.cfg.validate_n_random_basins
+            )
 
         # force model to train-mode when doing mc-dropout evaluation
         if self.cfg.mc_dropout:
@@ -245,7 +250,9 @@ class BaseTester(object):
             self.cfg.log_n_figures,
             len(basins),
         )
-        basins_for_figures = random.sample(list(basins), k=max_figures)
+        basins_for_figures = random.Random((getattr(self.cfg, 'seed', 0) or 0) + 1).sample(
+            list(basins), k=max_figures
+        )
 
         eval_data_it = self._evaluate(
             model, loader, self.dataset.frequencies, basins
@@ -409,6 +416,12 @@ class BaseTester(object):
                                         sim = sim.mean(dim='samples')
                                     case TesterSamplesReduction.MEDIAN:
                                         sim = sim.median(dim='samples')
+                                    case TesterSamplesReduction.Q80:
+                                        sim = sim.quantile(0.80, dim='samples').drop_vars('quantile', errors='ignore')
+                                    case TesterSamplesReduction.Q90:
+                                        sim = sim.quantile(0.90, dim='samples').drop_vars('quantile', errors='ignore')
+                                    case TesterSamplesReduction.Q95:
+                                        sim = sim.quantile(0.95, dim='samples').drop_vars('quantile', errors='ignore')
                                     case _:
                                         msg = f'Supported {self.cfg.tester_sample_reduction=}'
                                         raise KeyError(msg)
@@ -488,8 +501,14 @@ class BaseTester(object):
         if metrics and not experiment_logger:
             for freq, freq_metrics in metrics_results.items():
                 for name, metric in freq_metrics.items():
-                    median = np.nanmedian(metric)
-                    LOGGER.info('%s %s median=%f', freq, name, median)
+                    arr = np.asarray(metric, dtype=float)
+                    n_total = arr.size; n_nan = int(np.isnan(arr).sum())
+                    median = np.nanmedian(arr)
+                    LOGGER.info('%s %s median=%f [lead-0 NOWCAST only, NOT 72h forecast skill] (over %d/%d basins; %d dropped all-NaN)',
+                                freq, name, median, n_total - n_nan, n_total, n_nan)
+                    if n_total and n_nan / n_total > 0.1:
+                        LOGGER.warning('%s %s: %d/%d basins (%.0f%%) all-NaN -- median may be unreliable',
+                                       freq, name, n_nan, n_total, 100 * n_nan / n_total)
 
     def _calc_exclude_basins(self) -> Iterator[str]:
         if not self.cfg.tester_skip_obs_all_nan:
@@ -699,6 +718,10 @@ class BaseTester(object):
                             :, -predict_last_n[freq] :
                         ]
 
+                        # torch.compile + CUDAGraphs reuses the model-output buffer across
+                        # invocations; clone before accumulating so stored preds are not
+                        # overwritten by the next batch's forward (else RuntimeError at cat).
+                        y_hat_sub = y_hat_sub.detach().clone()
                         if freq not in preds:
                             preds[freq] = y_hat_sub
                             obs[freq] = y_sub

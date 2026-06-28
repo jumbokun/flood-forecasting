@@ -12,11 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import logging
 import os
 from pathlib import Path
 from typing import Hashable, Iterator
 
 import dask
+
+LOGGER = logging.getLogger(__name__)
 import dask.array
 import pandas as pd
 import xarray as xr
@@ -189,9 +192,19 @@ class Scaler:
         is_zero = (scales_to_check == 0).any('parameter').to_dataarray()
         features = is_zero['variable'][is_zero]
         if any(features):
-            raise ValueError(
-                f'Zero scale values found for features: {list(features)}.'
+            # A constant feature (e.g. a rare HydroATLAS land-cover class that is 0% across the
+            # training pool) yields scale/std = 0 -> divide-by-zero. Instead of crashing the whole
+            # from-scratch run on a diverse multi-source pool, set its scale/std to 1.0 so the
+            # feature passes through as a constant (harmless). Raising here was too strict.
+            names = [str(f.values) for f in features]
+            LOGGER.warning(
+                'Zero scale for constant features %s; setting scale/std=1 (identity pass-through).',
+                names,
             )
+            for var in self.scaler.data_vars:
+                for p in ('scale', 'std'):
+                    if float(self.scaler[var].sel(parameter=p)) == 0:
+                        self.scaler[var].loc[dict(parameter=p)] = 1.0
 
     def scale(
         self,
@@ -228,9 +241,28 @@ class Scaler:
             raise ValueError(
                 f'Requesting to scale variables that are not part of the scaler: {missing_features}'
             )
-        return (
-            dataset - self.scaler.sel(parameter='center')
-        ) / self.scaler.sel(parameter='scale')
+        scl = self.scaler.sel(parameter='scale')
+        # HYDROFUSE_SCALE_FLOOR: floor near-zero scales so features that are ~constant in the base
+        # (camels) training set don't explode to astronomical z-scores (up to ~3e6) for OOD basins
+        # (Alpine/large-river HydroATLAS classes), which overflow the mean-embedding product -> NaN.
+        # Only affects features with scale < floor (the degenerate statics); streamflow/forcing scales
+        # are well above it, so the target and dynamic inputs are untouched.
+        _floor = os.environ.get('HYDROFUSE_SCALE_FLOOR')
+        if _floor:
+            scl = scl.clip(min=float(_floor))
+        out = (dataset - self.scaler.sel(parameter='center')) / scl
+        # HYDROFUSE_STATIC_CLIP: hard-cap normalized STATIC features only (not streamflow / dynamic
+        # forcing), so OOD basins whose raw HydroATLAS value is itself far from the camels mean can't
+        # still produce a large z after flooring -> embedding overflow -> NaN. Statics = all vars that
+        # are not the target or a dynamic product.
+        _clip = os.environ.get('HYDROFUSE_STATIC_CLIP')
+        if _clip:
+            c = float(_clip)
+            dyn = ('streamflow', 'radklim', 'radolan', 'graphcast', 'era5', 'time_doy')
+            for v in list(out.data_vars):
+                if not str(v).startswith(dyn):
+                    out[v] = out[v].clip(-c, c)
+        return out
 
     def unscale(self, dataset: xr.Dataset) -> xr.Dataset:
         """Un-scale a data set with a precalculated scaler.
