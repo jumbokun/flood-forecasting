@@ -802,6 +802,14 @@ class Config(object):
         self._cfg['train_dir'] = folder
 
     @property
+    def hot_start_path(self) -> Path | None:
+        return self._cfg.get('hot_start_path', None)
+
+    @hot_start_path.setter
+    def hot_start_path(self, path: str | Path):
+        self._cfg['hot_start_path'] = Path(path).expanduser()
+
+    @property
     def train_end_date(self) -> list[pd.Timestamp]:
         return self._as_default_list(self._get_value_verbose('train_end_date'))
 

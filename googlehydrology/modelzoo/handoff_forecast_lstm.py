@@ -276,10 +276,22 @@ class HandoffForecastLSTM(BaseModel):
         # to extract the hidden and cell states at the point of the handoff.
         spinup_embeddings = hindcast_embeddings[:, : -self.overlap,]
         overlap_embeddings = hindcast_embeddings[:, -self.overlap :,]
-        spinup, (h_hindcast, c_hindcast) = self.hindcast_lstm(spinup_embeddings)
+        
+        hot_start_state = getattr(self.cfg, 'hot_start_path', None)
+        if hot_start_state is not None:
+            import numpy as np
+            state = np.load(hot_start_state, allow_pickle=False)
+            h_hindcast = torch.from_numpy(state['h_hindcast']).to(spinup_embeddings.device)
+            c_hindcast = torch.from_numpy(state['c_hindcast']).to(spinup_embeddings.device)
+            # Create a dummy spinup output so the rest of the code works
+            spinup = torch.zeros(spinup_embeddings.size(0), spinup_embeddings.size(1), self.hindcast_hidden_size, device=spinup_embeddings.device)
+        else:
+            spinup, (h_hindcast, c_hindcast) = self.hindcast_lstm(spinup_embeddings)
+
         hindcast_overlap, _ = self.hindcast_lstm(
             overlap_embeddings, (h_hindcast, c_hindcast)
         )
+
 
         # Handoff from hindcast to forecast.
         x = self.handoff_net(torch.cat([h_hindcast, c_hindcast], -1))
@@ -318,4 +330,33 @@ class HandoffForecastLSTM(BaseModel):
             )
 
         return output
+
+    def save_state(self, data: dict[str, torch.Tensor], path: str | Path):
+        """Perform a partial forward pass and save the state for a hot start at path."""
+        # Run the embedding layers.
+        hindcast_features = torch.cat(
+            [
+                t for f, t in data['x_d_hindcast'].items()
+                if f in self.hindcast_inputs
+            ], dim=-1)
+
+        statics_embeddings = self.statics_embedding_net(data['x_s'])
+        hindcast_embeddings = self.hindcast_embedding_net(hindcast_features)
+        
+        hindcast_embeddings = torch.cat(
+            [
+                hindcast_embeddings,
+                statics_embeddings.unsqueeze(1).expand(-1, hindcast_embeddings.size(1), -1)
+            ], dim=-1
+        )
+        
+        spinup_embeddings = hindcast_embeddings[:, : -self.overlap,]
+        _, (h_hindcast, c_hindcast) = self.hindcast_lstm(spinup_embeddings)
+        
+        import numpy as np
+        np.savez_compressed(
+            path,
+            h_hindcast=h_hindcast.detach().cpu().numpy(),
+            c_hindcast=c_hindcast.detach().cpu().numpy()
+        )
 

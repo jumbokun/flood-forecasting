@@ -97,6 +97,18 @@ class BaseModel(nn.Module):
         """
         raise NotImplementedError
 
+    def save_state(self, data: dict[str, torch.Tensor | dict[str, torch.Tensor]], path: str | Path):
+        """Save the hot start state of the model.
+        
+        Parameters
+        ----------
+        data : dict[str, torch.Tensor | dict[str, torch.Tensor]]
+            Dictionary, containing input features as key-value pairs.
+        path : str | Path
+            The file path where the state should be saved. Should not be a pickle file (npz is recommended).
+        """
+        raise NotImplementedError
+
     def pre_model_hook(
         self, data: dict[str, torch.Tensor], is_train: bool
     ) -> dict[str, torch.Tensor]:

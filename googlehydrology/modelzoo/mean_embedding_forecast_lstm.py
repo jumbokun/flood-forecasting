@@ -244,23 +244,107 @@ class MeanEmbeddingForecastLSTM(BaseModel):
             for name, fc in self.shared_embeddings_fc.items()
         ]
 
+        hot_start_state = getattr(self.cfg, 'hot_start_path', None)
+        h_hind_init = None
+        h_fore_init = None
+        if hot_start_state is not None:
+            import numpy as np
+            state = np.load(hot_start_state, allow_pickle=False)
+            device = hindcast_embeddings[0].device
+            h_hind_init = (
+                torch.from_numpy(state['h_hindcast']).to(device),
+                torch.from_numpy(state['c_hindcast']).to(device)
+            )
+            h_fore_init = (
+                torch.from_numpy(state['h_forecast']).to(device),
+                torch.from_numpy(state['c_forecast']).to(device)
+            )
+            hindcast_embeddings = [emb[:, self.seq_length :, :] for emb in hindcast_embeddings]
+            forecast_embeddings = [emb[:, self.seq_length :, :] for emb in forecast_embeddings]
+            shared_embeddings = [emb[:, self.seq_length :, :] for emb in shared_embeddings]
+
         hindcast_state = self._calc_lstm(
             lstm=self.hindcast_lstm,
             embeddings=hindcast_embeddings + shared_embeddings,
             static_embedding=static_embedding,
+            initial_state=h_hind_init,
         )
         forecast_state = self._calc_lstm(
             lstm=self.forecast_lstm,
             embeddings=forecast_embeddings + shared_embeddings,
             static_embedding=static_embedding,
             other_inputs=hindcast_state,
+            initial_state=h_fore_init,
         )
 
         head = self._calc_head(forecast_state)
+        
+        if hot_start_state is not None:
+            # Prepend dummy values for the skipped seq_length period so model output matches dataset expectation
+            dummy = {k: torch.zeros(v.shape[0], self.seq_length, v.shape[2], device=v.device, dtype=v.dtype) for k, v in head.items()}
+            head = {k: torch.cat([dummy[k], v], dim=1) for k, v in head.items()}
 
         return head
 
+    def save_state(self, data: dict[str, torch.Tensor | dict[str, torch.Tensor]], path: str | Path):
+        """Perform a partial forward pass and save the state for a hot start at path."""
+        forward_data = ForwardData.from_forward_data(data, self.config_data)
+
+        static_embedding = self._calc_static_embedding(forward_data)
+
+        hindcast_embeddings = [
+            self._calc_dynamic_embedding(
+                embedding_network=fc,
+                dynamic_data=forward_data.hindcast_features[name],
+                static_embedding=static_embedding,
+                append_nan=True,
+            )[:, :self.seq_length, :]
+            for name, fc in self.hindcast_embeddings_fc.items()
+        ]
+        forecast_embeddings = [
+            self._calc_dynamic_embedding(
+                embedding_network=fc,
+                dynamic_data=forward_data.forecast_features[name],
+                static_embedding=static_embedding,
+                append_nan=False,
+            )[:, :self.seq_length, :]
+            for name, fc in self.forecast_embeddings_fc.items()
+        ]
+        shared_embeddings = [
+            self._calc_dynamic_embedding(
+                embedding_network=fc,
+                dynamic_data=forward_data.forecast_features[name],
+                static_embedding=static_embedding,
+                append_nan=False,
+            )[:, :self.seq_length, :]
+            for name, fc in self.shared_embeddings_fc.items()
+        ]
+
+        hindcast_state, (h_hind, c_hind) = self._calc_lstm(
+            lstm=self.hindcast_lstm,
+            embeddings=hindcast_embeddings + shared_embeddings,
+            static_embedding=static_embedding,
+            return_state=True
+        )
+        forecast_state, (h_fore, c_fore) = self._calc_lstm(
+            lstm=self.forecast_lstm,
+            embeddings=forecast_embeddings + shared_embeddings,
+            static_embedding=static_embedding,
+            other_inputs=hindcast_state,
+            return_state=True
+        )
+        
+        import numpy as np
+        np.savez_compressed(
+            path,
+            h_hindcast=h_hind.detach().cpu().numpy(),
+            c_hindcast=c_hind.detach().cpu().numpy(),
+            h_forecast=h_fore.detach().cpu().numpy(),
+            c_forecast=c_fore.detach().cpu().numpy(),
+        )
+
     def _make_static_embedding_repeated(
+
         self, time_length: int, static_embedding: torch.Tensor
     ) -> torch.Tensor:
         """Returns the attributes repeated w.r.t the time length."""
@@ -338,7 +422,9 @@ class MeanEmbeddingForecastLSTM(BaseModel):
         embeddings: Iterable[torch.Tensor],
         static_embedding: torch.Tensor,
         other_inputs: torch.Tensor | None = None,
-    ) -> torch.Tensor:
+        initial_state: tuple[torch.Tensor, torch.Tensor] | None = None,
+        return_state: bool = False,
+    ) -> torch.Tensor | tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
         masked_mean_embeddings = self._masked_mean(embeddings)
         if other_inputs is not None:
             masked_mean_embeddings = torch.cat(
@@ -347,8 +433,14 @@ class MeanEmbeddingForecastLSTM(BaseModel):
         lstm_inputs = self._append_static_embedding(
             masked_mean_embeddings, static_embedding
         )
-        output, _ = lstm(input=lstm_inputs)
+        if initial_state is not None:
+            output, hx = lstm(input=lstm_inputs, hx=initial_state)
+        else:
+            output, hx = lstm(input=lstm_inputs)
+        if return_state:
+            return output, hx
         return output
+
 
     def _calc_head(
         self, forecast_state: torch.Tensor
