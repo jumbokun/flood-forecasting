@@ -90,8 +90,8 @@ validation_end_date: 31/12/2023
 # Test Period: A completely separate period used ONLY after training is finished.
 # It provides the final, unbiased evaluation of how well the model performs on
 # unseen future data.
-test_start_date: 01/01/1982
-test_end_date: 31/12/2023
+test_start_date: 
+test_end_date: 
 
 # -- Input Features (Dynamic) --
 # 'hindcast_inputs': Historical weather data the model sees to learn current state.
@@ -241,7 +241,7 @@ negative_sample_handling: clip
 
 # Number of days of past data the model uses as input for a single prediction.
 seq_length: 0
-hot_start_path: /path/to/saved_state.npz
+hot_start_path:
 
 # Number of days into the future to predict.
 lead_time: 7
