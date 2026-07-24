@@ -734,7 +734,12 @@ class Config(object):
 
     @property
     def seq_length(self) -> int | dict[str, int]:
-        return self._get_value_verbose('seq_length')
+        val = self._get_value_verbose('seq_length')
+        if getattr(self, 'hot_start_path', None) is not None:
+            if isinstance(val, dict):
+                return {k: 0 for k in val.keys()}
+            return 0
+        return val
 
     @property
     def static_attributes(self) -> list[str]:
