@@ -81,17 +81,19 @@ def test_handoff_forecast_lstm_hot_start(mock_check, mock_load, tmp_path):
 
     state_path = tmp_path / "state_handoff.npz"
     with torch.no_grad():
+        model.seq_length = cfg.seq_length - 1
         model.save_state(data, state_path)
+        model.seq_length = cfg.seq_length
         cold_preds = model(data)
         
-    # Hot start run
-    cfg._cfg['seq_length'] = 0
+    # Hot start run with seq_length=1
+    cfg._cfg['seq_length'] = 1
     cfg.hot_start_path = str(state_path)
-    model.seq_length = 0
+    model.seq_length = 1
     
     hot_data = {}
     hot_data['x_d_hindcast'] = {
-        k: v[:, -cfg.lead_time:, :] for k, v in data['x_d_hindcast'].items()
+        k: v[:, -(cfg.lead_time + 1):, :] for k, v in data['x_d_hindcast'].items()
     }
     hot_data['x_d_forecast'] = data['x_d_forecast']
     hot_data['x_s'] = data['x_s']
@@ -131,19 +133,22 @@ def test_mean_embedding_forecast_lstm_hot_start(mock_check, mock_load, tmp_path)
 
     state_path = tmp_path / "state_mean.npz"
     with torch.no_grad():
+        model.seq_length = cfg.seq_length - 1
         model.save_state(data, state_path)
+        model.seq_length = cfg.seq_length
         cold_preds = model(data)
         
-    cfg._cfg['seq_length'] = 0
+    # Hot start run with seq_length=1
+    cfg._cfg['seq_length'] = 1
     cfg.hot_start_path = str(state_path)
-    model.seq_length = 0
+    model.seq_length = 1
 
     hot_data = {}
     hot_data['x_d_hindcast'] = {
-        k: v[:, -cfg.lead_time:, :] for k, v in data['x_d_hindcast'].items()
+        k: v[:, -(cfg.lead_time + 1):, :] for k, v in data['x_d_hindcast'].items()
     }
     hot_data['x_d_forecast'] = {
-        k: v[:, -cfg.lead_time:, :] for k, v in data['x_d_forecast'].items()
+        k: v[:, -(cfg.lead_time + 1):, :] for k, v in data['x_d_forecast'].items()
     }
     hot_data['x_s'] = data['x_s']
 

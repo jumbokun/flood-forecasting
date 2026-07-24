@@ -280,20 +280,25 @@ class HandoffForecastLSTM(BaseModel):
         if hot_start_state is not None:
             import numpy as np
             state = np.load(hot_start_state, allow_pickle=False)
-            h_handoff = torch.from_numpy(state['h_handoff']).to(forecast_embeddings.device)
-            c_handoff = torch.from_numpy(state['c_handoff']).to(forecast_embeddings.device)
+            h_hindcast = torch.from_numpy(state['h_hindcast']).to(forecast_embeddings.device)
+            c_hindcast = torch.from_numpy(state['c_hindcast']).to(forecast_embeddings.device)
+            hindcast_initial_state = (h_hindcast, c_hindcast)
         else:
-            spinup_embeddings = hindcast_embeddings[:, : -self.overlap,]
-            overlap_embeddings = hindcast_embeddings[:, -self.overlap :,]
+            hindcast_initial_state = None
+        spinup_embeddings = hindcast_embeddings[:, : -self.overlap,]
+        overlap_embeddings = hindcast_embeddings[:, -self.overlap :,]
+        if hindcast_initial_state is not None:
+            spinup, (h_hindcast, c_hindcast) = self.hindcast_lstm(spinup_embeddings, hindcast_initial_state)
+        else:
             spinup, (h_hindcast, c_hindcast) = self.hindcast_lstm(spinup_embeddings)
-            hindcast_overlap, _ = self.hindcast_lstm(
-                overlap_embeddings, (h_hindcast, c_hindcast)
-            )
-            # Handoff from hindcast to forecast.
-            x = self.handoff_net(torch.cat([h_hindcast, c_hindcast], -1))
-            initial_state = self.handoff_linear(x)
-            h_handoff, c_handoff = initial_state.chunk(2, -1)
-            h_handoff, c_handoff = h_handoff.contiguous(), c_handoff.contiguous()
+        hindcast_overlap, _ = self.hindcast_lstm(
+            overlap_embeddings, (h_hindcast, c_hindcast)
+        )
+        # Handoff from hindcast to forecast.
+        x = self.handoff_net(torch.cat([h_hindcast, c_hindcast], -1))
+        initial_state = self.handoff_linear(x)
+        h_handoff, c_handoff = initial_state.chunk(2, -1)
+        h_handoff, c_handoff = h_handoff.contiguous(), c_handoff.contiguous()
 
         # Run the forecast LSTM.
         forecast, _ = self.forecast_lstm(
@@ -301,25 +306,21 @@ class HandoffForecastLSTM(BaseModel):
         )
 
         # Run head layers.
-        if hot_start_state is None:
-            y_spinup = self.hindcast_head(self.dropout(spinup))
-            y_hindcast_overlap = self.hindcast_head(self.dropout(hindcast_overlap))
+        y_spinup = self.hindcast_head(self.dropout(spinup))
+        y_hindcast_overlap = self.hindcast_head(self.dropout(hindcast_overlap))
         y_forecast = self.forecast_head(self.dropout(forecast))
         
         # Create the full prediction sequence, and only pull the last `seg_length` timesteps.
-        if hot_start_state is not None:
-            output = {key: y_forecast[key][:, -self.lead_time :, :] for key in y_forecast}
-        else:
-            output = {
-                key: torch.cat(
-                    [
-                        y_spinup[key], 
-                        y_hindcast_overlap[key], 
-                        y_forecast[key][:, -self.lead_time :, :]
-                    ], dim=1
-                )
-                for key in y_forecast
-            }
+        output = {
+            key: torch.cat(
+                [
+                    y_spinup[key], 
+                    y_hindcast_overlap[key], 
+                    y_forecast[key][:, -self.lead_time :, :]
+                ], dim=1
+            )
+            for key in y_forecast
+        }
         
         if self.overlap_output:
             y_forecast_overlap = y_forecast['y_hat'][:, : -self.lead_time, :]
@@ -351,20 +352,13 @@ class HandoffForecastLSTM(BaseModel):
             ], dim=-1
         )
         
-        # Run the hindcast LSTM on the true hindcast and overlap
-        spinup_embeddings = hindcast_embeddings[:, : -self.overlap,]
-        overlap_embeddings = hindcast_embeddings[:, -self.overlap :,]
+        # Run the hindcast LSTM on the first seq_length steps
+        spinup_embeddings = hindcast_embeddings[:, :self.seq_length, :]
         _, (h_hindcast, c_hindcast) = self.hindcast_lstm(spinup_embeddings)
         
-        # Handoff from hindcast to forecast.
-        x = self.handoff_net(torch.cat([h_hindcast, c_hindcast], -1))
-        initial_state = self.handoff_linear(x)
-        h_handoff, c_handoff = initial_state.chunk(2, -1)
-        h_handoff, c_handoff = h_handoff.contiguous(), c_handoff.contiguous()
-
         import numpy as np
         np.savez_compressed(
             path,
-            h_handoff=h_handoff.detach().cpu().numpy(),
-            c_handoff=c_handoff.detach().cpu().numpy(),
+            h_hindcast=h_hindcast.detach().cpu().numpy(),
+            c_hindcast=c_hindcast.detach().cpu().numpy(),
         )

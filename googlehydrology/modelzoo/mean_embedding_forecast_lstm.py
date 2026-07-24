@@ -261,9 +261,7 @@ class MeanEmbeddingForecastLSTM(BaseModel):
                 torch.from_numpy(state['h_forecast']).to(device),
                 torch.from_numpy(state['c_forecast']).to(device)
             )
-            hindcast_embeddings = [emb[:, self.seq_length :, :] for emb in hindcast_embeddings]
-            forecast_embeddings = [emb[:, self.seq_length :, :] for emb in forecast_embeddings]
-            shared_embeddings = [emb[:, self.seq_length :, :] for emb in shared_embeddings]
+
 
         hindcast_state = self._calc_lstm(
             lstm=self.hindcast_lstm,
@@ -281,10 +279,6 @@ class MeanEmbeddingForecastLSTM(BaseModel):
 
         head = self._calc_head(forecast_state)
         
-        if hot_start_state is not None:
-            # Prepend dummy values for the skipped seq_length period so model output matches dataset expectation
-            dummy = {k: torch.zeros(v.shape[0], self.seq_length, v.shape[2], device=v.device, dtype=v.dtype) for k, v in head.items()}
-            head = {k: torch.cat([dummy[k], v], dim=1) for k, v in head.items()}
 
         return head
 
