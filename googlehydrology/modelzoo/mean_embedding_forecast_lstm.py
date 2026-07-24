@@ -29,6 +29,8 @@ from googlehydrology.utils.lstm_utils import lstm_init
 FC_XAVIER = WeightInitOpt.FC_XAVIER
 
 
+from pathlib import Path
+
 class MeanEmbeddingForecastLSTM(BaseModel):
     r"""
     A forecasting model using mean embedding and LSTMs for hindcast and forecast.
@@ -250,7 +252,7 @@ class MeanEmbeddingForecastLSTM(BaseModel):
         if hot_start_state is not None:
             import numpy as np
             state = np.load(hot_start_state, allow_pickle=False)
-            device = hindcast_embeddings[0].device
+            device = static_embedding.device
             h_hind_init = (
                 torch.from_numpy(state['h_hindcast']).to(device),
                 torch.from_numpy(state['c_hindcast']).to(device)

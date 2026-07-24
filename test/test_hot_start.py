@@ -1,4 +1,5 @@
 import pytest
+from unittest.mock import patch
 import torch
 import torch.nn as nn
 from pathlib import Path
@@ -51,72 +52,104 @@ def get_base_cfg(tmp_path: Path):
         'optimizer': 'Adam',
         'number_of_basins': 1,
         'nan_handling_method': 'masked_mean',
+        'predict_last_n': 0,
     }
     return cfg_dict
 
-def test_handoff_forecast_lstm_hot_start(tmp_path):
+@patch('googlehydrology.datautils.scaler.Scaler.load')
+@patch('googlehydrology.datautils.scaler.Scaler.check_zero_scale')
+def test_handoff_forecast_lstm_hot_start(mock_check, mock_load, tmp_path):
     cfg_dict = get_base_cfg(tmp_path)
     cfg_dict['model'] = 'HandoffForecastLSTM'
     cfg = Config(cfg_dict, dev_mode=True)
-    
-    # We load dataset to get real data (Multimet)
-    dataset = Multimet(cfg, is_train=False, period='test', compute_scaler=False)
-    
     model = HandoffForecastLSTM(cfg)
     model.eval()
 
-    # Get one sample
-    sample = dataset[0]
-    # Add batch dimension
-    data = {k: torch.tensor(v).unsqueeze(0) if isinstance(v, np.ndarray) else v for k, v in sample.items()}
-    data['x_d_hindcast'] = {k: torch.tensor(v).unsqueeze(0) for k, v in sample['x_d_hindcast'].items()}
-    data['x_d_forecast'] = {k: torch.tensor(v).unsqueeze(0) for k, v in sample['x_d_forecast'].items()}
+    device = next(model.parameters()).device
+    batch_size = 2
+    data = {}
+    
+    data['x_d_hindcast'] = {
+        'pr_day_gridmet': torch.rand(batch_size, cfg.seq_length + cfg.lead_time, 1, device=device),
+        'tmmn_day_gridmet': torch.rand(batch_size, cfg.seq_length + cfg.lead_time, 1, device=device)
+    }
+    data['x_d_forecast'] = {
+        'pr_day_gridmet': torch.rand(batch_size, cfg.lead_time + cfg.forecast_overlap, 1, device=device),
+        'tmmn_day_gridmet': torch.rand(batch_size, cfg.lead_time + cfg.forecast_overlap, 1, device=device)
+    }
+    data['x_s'] = torch.rand(batch_size, len(cfg.static_attributes), device=device)
 
-    state_path = tmp_path / "state.npz"
+    state_path = tmp_path / "state_handoff.npz"
     with torch.no_grad():
         model.save_state(data, state_path)
         cold_preds = model(data)
         
     # Hot start run
+    cfg._cfg['seq_length'] = 0
     cfg.hot_start_path = str(state_path)
+    model.seq_length = 0
+    
+    hot_data = {}
+    hot_data['x_d_hindcast'] = {
+        k: v[:, -cfg.lead_time:, :] for k, v in data['x_d_hindcast'].items()
+    }
+    hot_data['x_d_forecast'] = data['x_d_forecast']
+    hot_data['x_s'] = data['x_s']
+
     with torch.no_grad():
-        hot_preds = model(data)
+        hot_preds = model(hot_data)
         
-    diff = (cold_preds['y_hat'] - hot_preds['y_hat'][:, cfg.seq_length:, :]).abs().max()
-    # Note: handoff output is size [batch, seq_length+lead_time, targets], wait...
-    # handoff cold output is [batch, seq_length+lead_time, targets? No, `(:, -self.seq_length :, :)` in `forward`]
-    # Let's just compare the last lead_time predictions
     cold_last = cold_preds['y_hat'][:, -cfg.lead_time:, :]
     hot_last = hot_preds['y_hat'][:, -cfg.lead_time:, :]
     assert (cold_last - hot_last).abs().max() < 1e-5
 
-def test_mean_embedding_forecast_lstm_hot_start(tmp_path):
+@patch('googlehydrology.datautils.scaler.Scaler.load')
+@patch('googlehydrology.datautils.scaler.Scaler.check_zero_scale')
+def test_mean_embedding_forecast_lstm_hot_start(mock_check, mock_load, tmp_path):
     cfg_dict = get_base_cfg(tmp_path)
     cfg_dict['model'] = 'MeanEmbeddingForecastLSTM'
     cfg_dict['n_distributions'] = 1
+    # For MeanEmbedding, forecast_overlap is typically sequence length, so it gets seq_length + lead_time points.
+    cfg_dict['forecast_overlap'] = cfg_dict['seq_length']
     cfg = Config(cfg_dict, dev_mode=True)
-    
-    # Use real basin data
-    dataset = Multimet(cfg, is_train=False, period='test', compute_scaler=False)
-    
     model = MeanEmbeddingForecastLSTM(cfg)
     model.eval()
 
-    sample = dataset[0]
-    data = {k: torch.tensor(v).unsqueeze(0) if isinstance(v, np.ndarray) else v for k, v in sample.items()}
-    data['x_d_hindcast'] = {k: torch.tensor(v).unsqueeze(0) for k, v in sample['x_d_hindcast'].items()}
-    data['x_d_forecast'] = {k: torch.tensor(v).unsqueeze(0) for k, v in sample['x_d_forecast'].items()}
+    device = next(model.parameters()).device
+    batch_size = 2
+    data = {}
+    
+    data['x_d_hindcast'] = {
+        'pr_day_gridmet': torch.rand(batch_size, cfg.seq_length + cfg.lead_time, 1, device=device),
+        'tmmn_day_gridmet': torch.rand(batch_size, cfg.seq_length + cfg.lead_time, 1, device=device)
+    }
+    data['x_d_forecast'] = {
+        'pr_day_gridmet': torch.rand(batch_size, cfg.seq_length + cfg.lead_time, 1, device=device),
+        'tmmn_day_gridmet': torch.rand(batch_size, cfg.seq_length + cfg.lead_time, 1, device=device)
+    }
+    data['x_s'] = torch.rand(batch_size, len(cfg.static_attributes), device=device)
 
     state_path = tmp_path / "state_mean.npz"
     with torch.no_grad():
         model.save_state(data, state_path)
         cold_preds = model(data)
         
+    cfg._cfg['seq_length'] = 0
     cfg.hot_start_path = str(state_path)
+    model.seq_length = 0
+
+    hot_data = {}
+    hot_data['x_d_hindcast'] = {
+        k: v[:, -cfg.lead_time:, :] for k, v in data['x_d_hindcast'].items()
+    }
+    hot_data['x_d_forecast'] = {
+        k: v[:, -cfg.lead_time:, :] for k, v in data['x_d_forecast'].items()
+    }
+    hot_data['x_s'] = data['x_s']
+
     with torch.no_grad():
-        hot_preds = model(data)
+        hot_preds = model(hot_data)
         
-    # mean embedding returns full seq_length + lead_time
     cold_last = cold_preds['y_hat'][:, -cfg.lead_time:, :]
     hot_last = hot_preds['y_hat'][:, -cfg.lead_time:, :]
     assert (cold_last - hot_last).abs().max() < 1e-5

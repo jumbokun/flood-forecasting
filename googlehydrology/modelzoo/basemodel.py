@@ -21,6 +21,8 @@ from googlehydrology.utils.config import Config
 from googlehydrology.utils.samplingutils import sample_pointpredictions
 
 
+from pathlib import Path
+
 class BaseModel(nn.Module):
     """Abstract base model class, don't use this class for model training.
 
