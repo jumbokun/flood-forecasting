@@ -129,6 +129,17 @@ class Config(object):
             new_name = re.sub(' ', '', new_name)
 
             self._cfg['experiment_name'] = new_name
+            
+        if self._cfg.get('hot_start_path', None) is not None:
+            sl = self._cfg.get('seq_length')
+            has_nonzero = False
+            if isinstance(sl, dict):
+                has_nonzero = any(v > 0 for v in sl.values())
+            elif sl is not None:
+                has_nonzero = sl > 0
+                
+            if has_nonzero:
+                raise ValueError("seq_length must be exactly 0 when hot_start_path is set.")
 
     def as_dict(self) -> dict:
         """Return run configuration as dictionary.
@@ -734,12 +745,7 @@ class Config(object):
 
     @property
     def seq_length(self) -> int | dict[str, int]:
-        val = self._get_value_verbose('seq_length')
-        if getattr(self, 'hot_start_path', None) is not None:
-            if isinstance(val, dict):
-                return {k: 0 for k in val.keys()}
-            return 0
-        return val
+        return self._get_value_verbose('seq_length')
 
     @property
     def static_attributes(self) -> list[str]:
@@ -812,6 +818,16 @@ class Config(object):
 
     @hot_start_path.setter
     def hot_start_path(self, path: str | Path):
+        sl = self._cfg.get('seq_length')
+        has_nonzero = False
+        if isinstance(sl, dict):
+            has_nonzero = any(v > 0 for v in sl.values())
+        elif sl is not None:
+            has_nonzero = sl > 0
+            
+        if has_nonzero:
+            raise ValueError("seq_length must be exactly 0 when hot_start_path is set.")
+            
         self._cfg['hot_start_path'] = Path(path).expanduser()
 
     @property
