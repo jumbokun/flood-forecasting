@@ -61,17 +61,17 @@ dataset: multimet
 
 # -- File Paths (UPDATE THESE TO MATCH YOUR SYSTEM) --
 # Paths to text files containing lists of basin IDs for training, validation, and testing.
-train_basin_file: ~/flood-forecasting/example-configs/multimet-basins-list-without-chirps.txt
-validation_basin_file: ~/flood-forecasting/example-configs/multimet-basins-list-without-chirps.txt
-test_basin_file: ~/flood-forecasting/example-configs/multimet-basins-list-without-chirps.txt
+train_basin_file: 
+validation_basin_file: 
+test_basin_file: 
 
 # Directory containing the target data (streamflow observations).
-targets_data_dir: Caravan-nc
+targets_data_dir: 
 # Directory containing static catchment attributes (e.g., area, elevation).
-statics_data_dir: Caravan-nc
+statics_data_dir: 
 # Directory containing dynamic meteorological forcing data (rain, temp, etc.).
 # 'gs://' indicates data is streamed directly from Google Cloud Storage.
-dynamics_data_dir: gs://caravan-multimet/v1.1
+dynamics_data_dir: 
 
 # -- Time Periods --
 # Define the start and end dates for each data split (format: dd/mm/yyyy).
