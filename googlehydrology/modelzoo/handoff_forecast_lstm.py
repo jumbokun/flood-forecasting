@@ -277,33 +277,79 @@ class HandoffForecastLSTM(BaseModel):
         # or spin-up, then the part the overlaps with the forecast. This is necessary
         # to extract the hidden and cell states at the point of the handoff.
         hot_start_state = getattr(self.cfg, 'hot_start_path', None)
+        hindcast_initial_state = None
+        forecast_initial_state = None
+        is_hot_start = False
         if hot_start_state is not None:
             import numpy as np
             state = np.load(hot_start_state, allow_pickle=False)
             h_hindcast = torch.from_numpy(state['h_hindcast']).to(forecast_embeddings.device)
             c_hindcast = torch.from_numpy(state['c_hindcast']).to(forecast_embeddings.device)
             hindcast_initial_state = (h_hindcast, c_hindcast)
+            
+            # For MeanEmbedding or models that preserve both
+            if 'h_forecast' in state:
+                h_forecast = torch.from_numpy(state['h_forecast']).to(forecast_embeddings.device)
+                c_forecast = torch.from_numpy(state['c_forecast']).to(forecast_embeddings.device)
+                forecast_initial_state = (h_forecast, c_forecast)
+            
+            # Even if overlap is > 0, if seq_length == 0 on a hot start we have 0 hindcast elements.
+            # We flag this so we can bypass spinup processing.
+            if hindcast_embeddings.size(1) == 0:
+                is_hot_start = True
+
+        if is_hot_start:
+            # Bypass spinup entirely. We shouldn't run hindcast_lstm on 0-length inputs.
+            # Spinup and hindcast_overlap outputs are empty for a length-0 hot start.
+            spinup = torch.empty(hindcast_embeddings.size(0), 0, self.hindcast_hidden_size, device=hindcast_embeddings.device)
+            hindcast_overlap = torch.empty(hindcast_embeddings.size(0), 0, self.hindcast_hidden_size, device=hindcast_embeddings.device)
+            
+            # The initial state is already at the correct temporal index (end of historical overlap).
+            h_handoff, c_handoff = forecast_initial_state
         else:
-            hindcast_initial_state = None
-        spinup_embeddings = hindcast_embeddings[:, : -self.overlap,]
-        overlap_embeddings = hindcast_embeddings[:, -self.overlap :,]
-        if hindcast_initial_state is not None:
-            spinup, (h_hindcast, c_hindcast) = self.hindcast_lstm(spinup_embeddings, hindcast_initial_state)
-        else:
-            spinup, (h_hindcast, c_hindcast) = self.hindcast_lstm(spinup_embeddings)
-        hindcast_overlap, _ = self.hindcast_lstm(
-            overlap_embeddings, (h_hindcast, c_hindcast)
-        )
-        # Handoff from hindcast to forecast.
-        x = self.handoff_net(torch.cat([h_hindcast, c_hindcast], -1))
-        initial_state = self.handoff_linear(x)
-        h_handoff, c_handoff = initial_state.chunk(2, -1)
-        h_handoff, c_handoff = h_handoff.contiguous(), c_handoff.contiguous()
+            # Normal cold-start or save-state propagation
+            if self.overlap > 0:
+                spinup_embeddings = hindcast_embeddings[:, : -self.overlap,]
+                overlap_embeddings = hindcast_embeddings[:, -self.overlap :,]
+            else:
+                spinup_embeddings = hindcast_embeddings
+                overlap_embeddings = hindcast_embeddings[:, 0:0, :] # empty tensor
+            
+            if spinup_embeddings.size(1) > 0:
+                if hindcast_initial_state is not None:
+                    spinup, (h_hindcast, c_hindcast) = self.hindcast_lstm(spinup_embeddings, hindcast_initial_state)
+                else:
+                    spinup, (h_hindcast, c_hindcast) = self.hindcast_lstm(spinup_embeddings)
+            else:
+                spinup = torch.empty(hindcast_embeddings.size(0), 0, self.hindcast_hidden_size, device=hindcast_embeddings.device)
+                # If spinup is length 0 but overlap > 0, we use the loaded initial state
+                if hindcast_initial_state is not None:
+                    h_hindcast, c_hindcast = hindcast_initial_state
+                else:
+                    h_hindcast = torch.zeros(1, hindcast_embeddings.size(0), self.hindcast_hidden_size, device=hindcast_embeddings.device)
+                    c_hindcast = torch.zeros(1, hindcast_embeddings.size(0), self.hindcast_hidden_size, device=hindcast_embeddings.device)
+
+            if overlap_embeddings.size(1) > 0:
+                hindcast_overlap, (h_hind_final, c_hind_final) = self.hindcast_lstm(
+                    overlap_embeddings, (h_hindcast, c_hindcast)
+                )
+            else:
+                hindcast_overlap = torch.empty(hindcast_embeddings.size(0), 0, self.hindcast_hidden_size, device=hindcast_embeddings.device)
+                h_hind_final, c_hind_final = h_hindcast, c_hindcast
+                
+            # Handoff from hindcast to forecast.
+            x = self.handoff_net(torch.cat([h_hindcast, c_hindcast], -1))
+            initial_state = self.handoff_linear(x)
+            h_handoff, c_handoff = initial_state.chunk(2, -1)
+            h_handoff, c_handoff = h_handoff.contiguous(), c_handoff.contiguous()
 
         # Run the forecast LSTM.
+        # If hot start, forecast_embeddings is just the lead_time (no overlap), so we just run it directly on the state.
+        # But if it's colid start, forecast_embeddings has overlap + lead_time, and runs from the h_handoff (which is from BEFORE overlap).
         forecast, _ = self.forecast_lstm(
             forecast_embeddings, (h_handoff, c_handoff)
         )
+
 
         # Run head layers.
         y_spinup = self.hindcast_head(self.dropout(spinup))
@@ -352,13 +398,64 @@ class HandoffForecastLSTM(BaseModel):
             ], dim=-1
         )
         
-        # Run the hindcast LSTM on the first seq_length steps
-        spinup_embeddings = hindcast_embeddings[:, :self.seq_length, :]
+        # We run the exact same logic up to the final temporal state (Day D)
+        forecast_features = torch.cat(
+            [
+                t for f, t in data['x_d_forecast'].items()
+                if f in self.forecast_inputs
+            ], dim=-1)
+
+        forecast_embeddings = self.forecast_embedding_net(forecast_features)
+        forecast_embeddings = torch.cat(
+            [
+                forecast_embeddings,
+                statics_embeddings.unsqueeze(1).expand(-1, forecast_embeddings.size(1), -1)
+            ], dim=-1
+        )
+        
+        # Cold start logic internally to propagate up to Day D
+        if self.overlap > 0:
+            spinup_embeddings = hindcast_embeddings[:, : -self.overlap,]
+            overlap_embeddings_hindcast = hindcast_embeddings[:, -self.overlap :,]
+            
+            # Forecast embeddings contains overlap+lead. We only want overlap here.
+            # Wait, `Multimet._extract_forecasts` prepends `forecast_overlap` before `lead_time`.
+            # If lead_time is 7 and overlap is 10, total is 17. The first 10 is overlap!
+            overlap_embeddings_forecast = forecast_embeddings[:, :self.overlap, :]
+        else:
+            spinup_embeddings = hindcast_embeddings
+            overlap_embeddings_hindcast = hindcast_embeddings[:, 0:0, :]
+            overlap_embeddings_forecast = forecast_embeddings[:, 0:0, :]
+            
         _, (h_hindcast, c_hindcast) = self.hindcast_lstm(spinup_embeddings)
         
+        # We also run hindcast overlap to save its final state
+        if overlap_embeddings_hindcast.size(1) > 0:
+            _, (h_hind_final, c_hind_final) = self.hindcast_lstm(
+                overlap_embeddings_hindcast, (h_hindcast, c_hindcast)
+            )
+        else:
+            h_hind_final, c_hind_final = h_hindcast, c_hindcast
+            
+        # Handoff
+        x = self.handoff_net(torch.cat([h_hindcast, c_hindcast], -1))
+        initial_state = self.handoff_linear(x)
+        h_handoff, c_handoff = initial_state.chunk(2, -1)
+        h_handoff, c_handoff = h_handoff.contiguous(), c_handoff.contiguous()
+        
+        # Run forecast lstm on just the overlap
+        if overlap_embeddings_forecast.size(1) > 0:
+            _, (h_fore_final, c_fore_final) = self.forecast_lstm(
+                overlap_embeddings_forecast, (h_handoff, c_handoff)
+            )
+        else:
+            h_fore_final, c_fore_final = h_handoff, c_handoff
+            
         import numpy as np
         np.savez_compressed(
             path,
-            h_hindcast=h_hindcast.detach().cpu().numpy(),
-            c_hindcast=c_hindcast.detach().cpu().numpy(),
+            h_hindcast=h_hind_final.detach().cpu().numpy(),
+            c_hindcast=c_hind_final.detach().cpu().numpy(),
+            h_forecast=h_fore_final.detach().cpu().numpy(),
+            c_forecast=c_fore_final.detach().cpu().numpy(),
         )
