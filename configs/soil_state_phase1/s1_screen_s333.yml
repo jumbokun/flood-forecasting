@@ -1,0 +1,329 @@
+batch_size: 64
+clip_gradient_norm: 1
+data_dir: /data/zhu/openhydronet/data/camels_de_1h_iconfc_soil_v1
+dataset: multimet
+device: cuda:0
+dynamics_data_dir: /data/zhu/openhydronet/data/camels_de_1h_iconfc_soil_v1
+dynamics_embedding:
+  activation: tanh
+  dropout: 0.0
+  hiddens:
+  - 16
+  type: fc
+epochs: 3
+experiment_name: soil_state_s1_screen_s333
+forecast_inputs:
+  iconfc:
+  - iconfc_total_precipitation
+  - iconfc_temperature_2m
+forecast_overlap: 720
+head: regression
+hidden_size: 256
+hindcast_inputs:
+  met:
+  - radklim_total_precipitation
+  - radklim_temperature_2m
+  - radklim_surface_net_solar_radiation
+  - time_doy_sin
+  - time_doy_cos
+  soil:
+  - dwd_soil_0_10_p10
+  - dwd_soil_0_10_p50
+  - dwd_soil_0_10_p90
+  - dwd_soil_0_30_p10
+  - dwd_soil_0_30_p50
+  - dwd_soil_0_30_p90
+  - dwd_soil_0_10_coverage
+  - dwd_soil_0_30_coverage
+  - dwd_soil_layer_gradient_p50
+  - dwd_soil_state_age_hours
+inference_mode: true
+initial_forget_bias: 3
+initial_learning_rate: 0.0005
+lazy_load: true
+lead_time: 48
+learning_rate_drop_factor: 0.5
+learning_rate_epochs_drop: 5
+learning_rate_strategy: StepLR
+log_interval: 100
+log_n_figures: 0
+log_tensorboard: true
+loss: nse
+max_updates_per_epoch: 500
+metrics:
+- NSE
+- KGE
+- Alpha-NSE
+- Beta-NSE
+- FHV
+- Peak-Timing
+model: mean_embedding_forecast_lstm
+multimet_frequency: 1h
+num_workers: 4
+optimizer: Adam
+output_activation: linear
+output_dropout: 0.4
+predict_last_n: 49
+regularization: null
+save_validation_results: true
+save_weights_every: 3
+seed: 333
+seq_length: 720
+state_handoff_network:
+  activation: tanh
+  dropout: 0.0
+  hiddens:
+  - 4
+static_attributes:
+- run_mm_syr
+- inu_pc_smn
+- inu_pc_umn
+- inu_pc_smx
+- inu_pc_umx
+- inu_pc_slt
+- inu_pc_ult
+- lka_pc_sse
+- lka_pc_use
+- lkv_mc_usu
+- rev_mc_usu
+- dor_pc_pva
+- ria_ha_ssu
+- ria_ha_usu
+- riv_tc_ssu
+- riv_tc_usu
+- gwt_cm_sav
+- ele_mt_sav
+- ele_mt_uav
+- ele_mt_smn
+- ele_mt_smx
+- slp_dg_sav
+- slp_dg_uav
+- sgr_dk_sav
+- tmp_dc_syr
+- tmp_dc_uyr
+- tmp_dc_smn
+- tmp_dc_smx
+- tmp_dc_s01
+- tmp_dc_s02
+- tmp_dc_s03
+- tmp_dc_s04
+- tmp_dc_s05
+- tmp_dc_s06
+- tmp_dc_s07
+- tmp_dc_s08
+- tmp_dc_s09
+- tmp_dc_s10
+- tmp_dc_s11
+- tmp_dc_s12
+- pre_mm_syr
+- pre_mm_uyr
+- pre_mm_s01
+- pre_mm_s02
+- pre_mm_s03
+- pre_mm_s04
+- pre_mm_s05
+- pre_mm_s06
+- pre_mm_s07
+- pre_mm_s08
+- pre_mm_s09
+- pre_mm_s10
+- pre_mm_s11
+- pre_mm_s12
+- pet_mm_syr
+- pet_mm_uyr
+- pet_mm_s01
+- pet_mm_s02
+- pet_mm_s03
+- pet_mm_s04
+- pet_mm_s05
+- pet_mm_s06
+- pet_mm_s07
+- pet_mm_s08
+- pet_mm_s09
+- pet_mm_s10
+- pet_mm_s11
+- pet_mm_s12
+- aet_mm_syr
+- aet_mm_uyr
+- aet_mm_s01
+- aet_mm_s02
+- aet_mm_s03
+- aet_mm_s04
+- aet_mm_s05
+- aet_mm_s06
+- aet_mm_s07
+- aet_mm_s08
+- aet_mm_s09
+- aet_mm_s10
+- aet_mm_s11
+- aet_mm_s12
+- ari_ix_sav
+- ari_ix_uav
+- cmi_ix_syr
+- cmi_ix_uyr
+- cmi_ix_s01
+- cmi_ix_s02
+- cmi_ix_s03
+- cmi_ix_s04
+- cmi_ix_s05
+- cmi_ix_s06
+- cmi_ix_s07
+- cmi_ix_s08
+- cmi_ix_s09
+- cmi_ix_s10
+- cmi_ix_s11
+- cmi_ix_s12
+- snw_pc_syr
+- snw_pc_uyr
+- snw_pc_smx
+- snw_pc_s01
+- snw_pc_s02
+- snw_pc_s03
+- snw_pc_s04
+- snw_pc_s05
+- snw_pc_s06
+- snw_pc_s07
+- snw_pc_s08
+- snw_pc_s09
+- snw_pc_s10
+- snw_pc_s11
+- snw_pc_s12
+- glc_pc_s02
+- glc_pc_s04
+- glc_pc_s06
+- glc_pc_s13
+- glc_pc_s14
+- glc_pc_s15
+- glc_pc_s16
+- glc_pc_s17
+- glc_pc_s18
+- glc_pc_s20
+- glc_pc_s21
+- glc_pc_s22
+- glc_pc_u02
+- glc_pc_u04
+- glc_pc_u06
+- glc_pc_u13
+- glc_pc_u14
+- glc_pc_u15
+- glc_pc_u16
+- glc_pc_u17
+- glc_pc_u18
+- glc_pc_u20
+- glc_pc_u21
+- glc_pc_u22
+- pnv_pc_s04
+- pnv_pc_s05
+- pnv_pc_s06
+- pnv_pc_s07
+- pnv_pc_s08
+- pnv_pc_s10
+- pnv_pc_s12
+- pnv_pc_s13
+- pnv_pc_u04
+- pnv_pc_u05
+- pnv_pc_u06
+- pnv_pc_u07
+- pnv_pc_u08
+- pnv_pc_u10
+- pnv_pc_u12
+- pnv_pc_u13
+- pnv_pc_u15
+- wet_pc_sg1
+- wet_pc_ug1
+- wet_pc_sg2
+- wet_pc_ug2
+- wet_pc_s01
+- wet_pc_s03
+- wet_pc_s06
+- wet_pc_s08
+- wet_pc_u01
+- wet_pc_u03
+- wet_pc_u04
+- wet_pc_u06
+- wet_pc_u08
+- for_pc_sse
+- for_pc_use
+- crp_pc_sse
+- crp_pc_use
+- pst_pc_sse
+- pst_pc_use
+- ire_pc_sse
+- ire_pc_use
+- gla_pc_use
+- prm_pc_sse
+- prm_pc_use
+- pac_pc_sse
+- pac_pc_use
+- cly_pc_sav
+- cly_pc_uav
+- slt_pc_sav
+- slt_pc_uav
+- snd_pc_sav
+- snd_pc_uav
+- soc_th_sav
+- soc_th_uav
+- swc_pc_syr
+- swc_pc_uyr
+- swc_pc_s01
+- swc_pc_s02
+- swc_pc_s03
+- swc_pc_s04
+- swc_pc_s05
+- swc_pc_s06
+- swc_pc_s07
+- swc_pc_s08
+- swc_pc_s09
+- swc_pc_s10
+- swc_pc_s11
+- swc_pc_s12
+- kar_pc_sse
+- kar_pc_use
+- ero_kh_sav
+- ero_kh_uav
+- pop_ct_ssu
+- pop_ct_usu
+- ppd_pk_sav
+- ppd_pk_uav
+- urb_pc_sse
+- urb_pc_use
+- nli_ix_sav
+- nli_ix_uav
+- rdd_mk_sav
+- rdd_mk_uav
+- hft_ix_s93
+- hft_ix_u93
+- hft_ix_s09
+- hft_ix_u09
+- gdp_ud_sav
+- gdp_ud_ssu
+- gdp_ud_usu
+- hdi_ix_sav
+statics_data_dir: /data/zhu/openhydronet/data/camels_de_1h_iconfc_soil_v1
+statics_embedding:
+  activation: tanh
+  dropout: 0.0
+  hiddens:
+  - 64
+  type: fc
+target_variables:
+- streamflow
+targets_data_dir: /data/zhu/openhydronet/data/camels_de_1h_iconfc_soil_v1
+test_basin_file: /data/zhu/openhydronet/data/camels_de_1h_iconfc_soil_v1/basins/test_basins.txt
+test_end_date: 29/12/2024
+test_start_date: 01/01/2024
+timestep_counter: true
+train_basin_file: /data/zhu/openhydronet/data/camels_de_1h_iconfc_soil_v1/basins/train_basins.txt
+train_end_date: 29/12/2022
+train_start_date: 01/07/2021
+validate_every: null
+validate_n_random_basins: 150
+validation_basin_file: /data/zhu/openhydronet/data/camels_de_1h_iconfc_soil_v1/basins/val_basins.txt
+validation_end_date: 29/12/2023
+validation_start_date: 01/01/2023
+run_dir: /data/zhu/openhydronet/runs/soil-state-v1
+precomputed_scaler_dir: /data/zhu/openhydronet/runs/soil-state-v1/soil_state_s1_smoke_0408_141349
+experimental_train_sample_stride: 3
+experimental_fast_train_target_index: true
+experimental_basin_block_sampler: true
+experimental_skip_dynamic_sample_validation: false
