@@ -218,6 +218,59 @@ def forcing_support_contract(frame: pd.DataFrame) -> dict:
     return result
 
 
+def write_prediction_panel(
+    path: Path,
+    panels: list[dict[str, object]],
+    *,
+    checkpoint: Path,
+    config_path: Path,
+    issue_stride_hours: int,
+) -> dict:
+    """Write raw issue-time forecasts to a compact, self-describing NPZ."""
+
+    if not panels:
+        raise RuntimeError('Cannot write an empty prediction panel.')
+    lead_hour = np.asarray(panels[0]['lead_hour'], dtype=np.int16)
+    expected_shape = np.asarray(panels[0]['obs_mm_h']).shape
+    for panel in panels:
+        if np.asarray(panel['obs_mm_h']).shape != expected_shape:
+            raise RuntimeError('Prediction panel issue counts are not uniform.')
+        if not np.array_equal(panel['lead_hour'], lead_hour):
+            raise RuntimeError('Prediction panel lead grids differ by basin.')
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix('.tmp.npz')
+    np.savez_compressed(
+        temporary,
+        schema_version=np.array([1], dtype=np.int16),
+        basin=np.asarray([panel['basin'] for panel in panels]),
+        issue_time=np.stack(
+            [np.asarray(panel['issue_time']) for panel in panels]
+        ).astype('datetime64[ns]'),
+        lead_hour=lead_hour,
+        obs_mm_h=np.stack(
+            [np.asarray(panel['obs_mm_h']) for panel in panels]
+        ).astype(np.float32),
+        sim_mm_h=np.stack(
+            [np.asarray(panel['sim_mm_h']) for panel in panels]
+        ).astype(np.float32),
+        checkpoint_sha256=np.array([sha256(checkpoint)]),
+        config_sha256=np.array([sha256(config_path)]),
+        issue_stride_hours=np.array([issue_stride_hours], dtype=np.int16),
+    )
+    temporary.replace(path)
+    return {
+        'path': str(path),
+        'size_bytes': path.stat().st_size,
+        'sha256': sha256(path),
+        'shape': {
+            'basin': len(panels),
+            'issue_time': expected_shape[0],
+            'lead_hour': expected_shape[1],
+        },
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument('--run-dir', type=Path, required=True)
@@ -230,6 +283,7 @@ def main() -> None:
     parser.add_argument('--issue-stride-hours', type=int, default=3)
     parser.add_argument('--basin-file', type=Path)
     parser.add_argument('--output-dir', type=Path)
+    parser.add_argument('--prediction-panel', type=Path)
     args = parser.parse_args()
 
     config_path = args.run_dir / 'config.yml'
@@ -299,6 +353,7 @@ def main() -> None:
     scale = float(scaler.sel(parameter='scale'))
     frequency = tester.dataset.frequencies[0]
     rows = []
+    prediction_panels = []
     issue_counts = {}
     started = time.time()
     evaluation = tester._evaluate(
@@ -335,6 +390,16 @@ def main() -> None:
                 f'Valid-time grid does not equal issue_time + lead for {basin}.'
             )
         issue_counts[basin] = int(len(issue_times))
+        if args.prediction_panel is not None:
+            prediction_panels.append(
+                {
+                    'basin': basin,
+                    'issue_time': issue_times.values,
+                    'lead_hour': lead_hours,
+                    'obs_mm_h': obs,
+                    'sim_mm_h': sim,
+                }
+            )
         for column, lead in enumerate(lead_hours):
             rows.append(
                 {
@@ -354,6 +419,16 @@ def main() -> None:
             )
 
     frame = pd.DataFrame(rows)
+    prediction_panel_audit = None
+    if args.prediction_panel is not None:
+        prediction_panel_audit = write_prediction_panel(
+            args.prediction_panel,
+            prediction_panels,
+            checkpoint=checkpoint,
+            config_path=config_path,
+            issue_stride_hours=args.issue_stride_hours,
+        )
+
     summary = {
         'schema_version': 1,
         'description': (
@@ -379,6 +454,7 @@ def main() -> None:
         'issue_count_max': int(max(issue_counts.values())),
         'elapsed_seconds': float(time.time() - started),
         'forcing_support_contract': forcing_support_contract(frame),
+        'prediction_panel': prediction_panel_audit,
         **summarize(frame),
     }
     (output_dir / 'summary.json').write_text(
